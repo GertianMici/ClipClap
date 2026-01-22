@@ -1,0 +1,215 @@
+name: Build and Release DMG
+
+# NOTE: This workflow builds unsigned DMG files suitable for local distribution.
+# For App Store or notarized distribution, you'll need:
+# 1. A paid Apple Developer account ($99/year)
+# 2. Add APPLE_TEAM_ID to GitHub Secrets (Settings > Secrets > Actions)
+# 3. Set up signing certificates in the workflow
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if commit is version bump
+        id: check_commit
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if [[ "$COMMIT_MSG" == "Bump version to"* ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "This is a version bump commit, skipping workflow"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "This is a regular commit, proceeding with release"
+          fi
+
+      - name: Set up Xcode
+        if: steps.check_commit.outputs.skip == 'false'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Get current version and increment
+        if: steps.check_commit.outputs.skip == 'false'
+        id: version
+        run: |
+          # Extract current version from Info.plist
+          CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" ClipClap/Info.plist)
+          CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ClipClap/Info.plist)
+
+          echo "Current version: $CURRENT_VERSION (build $CURRENT_BUILD)"
+
+          # Check if this version already has a release
+          if git tag | grep -q "^v${CURRENT_VERSION}$"; then
+            # Version exists, increment patch version
+            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+            MAJOR="${VERSION_PARTS[0]}"
+            MINOR="${VERSION_PARTS[1]:-0}"
+            PATCH="${VERSION_PARTS[2]:-0}"
+
+            # Increment patch version
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          else
+            # First release of this version
+            NEW_VERSION="$CURRENT_VERSION"
+          fi
+
+          # Increment build number
+          NEW_BUILD=$((CURRENT_BUILD + 1))
+
+          echo "New version: $NEW_VERSION (build $NEW_BUILD)"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "build=$NEW_BUILD" >> $GITHUB_OUTPUT
+
+          # Update Info.plist with new version
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" ClipClap/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" ClipClap/Info.plist
+
+      - name: Setup export options
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          # Create ExportOptions.plist dynamically
+          # If APPLE_TEAM_ID secret is set, include it; otherwise build unsigned
+          cat > /tmp/ExportOptions.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>mac-application</string>
+              <key>compileBitcode</key>
+              <false/>
+              <key>stripSwiftSymbols</key>
+              <true/>
+          EOF
+
+          # Add Team ID if secret is provided
+          if [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            cat >> /tmp/ExportOptions.plist << 'EOF'
+              <key>signingStyle</key>
+              <string>automatic</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+          EOF
+          fi
+
+          cat >> /tmp/ExportOptions.plist << 'EOF'
+          </dict>
+          </plist>
+          EOF
+
+          cat /tmp/ExportOptions.plist
+
+      - name: Build app
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          xcodebuild -project ClipClap.xcodeproj \
+            -scheme ClipClap \
+            -configuration Release \
+            -derivedDataPath build \
+            -archivePath build/ClipClap.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          # Export the archive
+          xcodebuild -exportArchive \
+            -archivePath build/ClipClap.xcarchive \
+            -exportPath build/Export \
+            -exportOptionsPlist /tmp/ExportOptions.plist
+
+      - name: Create DMG
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          # Install create-dmg if needed
+          brew install create-dmg
+
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_PATH="build/Export/ClipClap.app"
+          DMG_NAME="ClipClap-${VERSION}.dmg"
+
+          # Create DMG
+          create-dmg \
+            --volname "ClipClap" \
+            --volicon "${APP_PATH}/Contents/Resources/AppIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "ClipClap.app" 200 190 \
+            --hide-extension "ClipClap.app" \
+            --app-drop-link 600 185 \
+            "${DMG_NAME}" \
+            "${APP_PATH}" \
+            || true
+
+          # If create-dmg fails (sometimes it does even on success), use hdiutil as fallback
+          if [ ! -f "${DMG_NAME}" ]; then
+            echo "create-dmg failed, using hdiutil fallback"
+            mkdir -p dmg-temp
+            cp -R "${APP_PATH}" dmg-temp/
+            hdiutil create -volname "ClipClap" -srcfolder dmg-temp -ov -format UDZO "${DMG_NAME}"
+            rm -rf dmg-temp
+          fi
+
+          echo "DMG created: ${DMG_NAME}"
+          ls -lh "${DMG_NAME}"
+
+      - name: Commit version bump
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ClipClap/Info.plist
+          git commit -m "Bump version to ${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})"
+          git tag "v${{ steps.version.outputs.version }}"
+
+      - name: Push changes and tags
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          git push origin HEAD:main
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        if: steps.check_commit.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ClipClap v${{ steps.version.outputs.version }}
+          body: |
+            ## ClipClap v${{ steps.version.outputs.version }}
+
+            **Installation:**
+            1. Download the DMG file below
+            2. Open the DMG
+            3. Drag ClipClap to your Applications folder
+            4. Launch ClipClap from Applications
+            5. Grant accessibility permissions when prompted
+
+            **What's New:**
+            - Automated release build ${{ steps.version.outputs.build }}
+
+            **System Requirements:**
+            - macOS 12.0 (Monterey) or later
+          files: ClipClap-${{ steps.version.outputs.version }}.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
