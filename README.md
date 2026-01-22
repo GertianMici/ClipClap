@@ -19,10 +19,7 @@ A free, open-source clipboard history manager for macOS — bringing Windows-sty
 
 ## Installation
 
-### Option 1: Download from App Store
-[Download on the Mac App Store](#) *(Coming Soon)*
-
-### Option 2: Download Pre-built Release
+### Download Pre-built Release
 1. Go to [Releases](https://github.com/GertianMici/ClipClap/releases)
 2. Download the latest `ClipClap.dmg`
 3. Open the DMG and drag ClipClap to your Applications folder
@@ -142,14 +139,6 @@ ClipClap/
 ### App not starting?
 1. Check if it's running in Activity Monitor
 2. Try deleting preferences: `defaults delete com.clipboard.manager`
-
-## Roadmap
-
-- [ ] Sync across devices via iCloud
-- [ ] Pin favorite items
-- [ ] Snippet templates
-- [ ] Image preview in popup
-- [ ] Dark/light mode themes
 
 ## License
 
