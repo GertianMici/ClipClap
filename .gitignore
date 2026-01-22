@@ -5,6 +5,11 @@
 ## User settings
 xcuserdata/
 
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
 ## Obj-C/Swift specific
 *.hmap
 
@@ -60,3 +65,7 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Build artifacts
+build/
+*.dmg
