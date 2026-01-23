@@ -1,11 +1,5 @@
 name: Build and Release DMG
 
-# NOTE: This workflow builds unsigned DMG files suitable for local distribution.
-# For App Store or notarized distribution, you'll need:
-# 1. A paid Apple Developer account ($99/year)
-# 2. Add APPLE_TEAM_ID to GitHub Secrets (Settings > Secrets > Actions)
-# 3. Set up signing certificates in the workflow
-
 on:
   push:
     branches:
@@ -49,44 +43,34 @@ jobs:
         if: steps.check_commit.outputs.skip == 'false'
         id: version
         run: |
-          # Extract current version from Info.plist
           CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" ClipClap/Info.plist)
           CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ClipClap/Info.plist)
 
           echo "Current version: $CURRENT_VERSION (build $CURRENT_BUILD)"
 
-          # Check if this version already has a release
           if git tag | grep -q "^v${CURRENT_VERSION}$"; then
-            # Version exists, increment patch version
             IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
             MAJOR="${VERSION_PARTS[0]}"
             MINOR="${VERSION_PARTS[1]:-0}"
             PATCH="${VERSION_PARTS[2]:-0}"
-
-            # Increment patch version
             PATCH=$((PATCH + 1))
             NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           else
-            # First release of this version
             NEW_VERSION="$CURRENT_VERSION"
           fi
 
-          # Increment build number
           NEW_BUILD=$((CURRENT_BUILD + 1))
 
           echo "New version: $NEW_VERSION (build $NEW_BUILD)"
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "build=$NEW_BUILD" >> $GITHUB_OUTPUT
 
-          # Update Info.plist with new version
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" ClipClap/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" ClipClap/Info.plist
 
       - name: Setup export options
         if: steps.check_commit.outputs.skip == 'false'
         run: |
-          # Create ExportOptions.plist dynamically
-          # If APPLE_TEAM_ID secret is set, include it; otherwise build unsigned
           cat > /tmp/ExportOptions.plist << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -100,7 +84,6 @@ jobs:
               <true/>
           EOF
 
-          # Add Team ID if secret is provided
           if [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
             cat >> /tmp/ExportOptions.plist << 'EOF'
               <key>signingStyle</key>
@@ -130,7 +113,6 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-          # Export the archive
           xcodebuild -exportArchive \
             -archivePath build/ClipClap.xcarchive \
             -exportPath build/Export \
@@ -139,14 +121,12 @@ jobs:
       - name: Create DMG
         if: steps.check_commit.outputs.skip == 'false'
         run: |
-          # Install create-dmg if needed
           brew install create-dmg
 
           VERSION="${{ steps.version.outputs.version }}"
           APP_PATH="build/Export/ClipClap.app"
           DMG_NAME="ClipClap-${VERSION}.dmg"
 
-          # Create DMG
           create-dmg \
             --volname "ClipClap" \
             --volicon "${APP_PATH}/Contents/Resources/AppIcon.icns" \
@@ -160,7 +140,6 @@ jobs:
             "${APP_PATH}" \
             || true
 
-          # If create-dmg fails (sometimes it does even on success), use hdiutil as fallback
           if [ ! -f "${DMG_NAME}" ]; then
             echo "create-dmg failed, using hdiutil fallback"
             mkdir -p dmg-temp
