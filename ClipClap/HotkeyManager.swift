@@ -203,7 +203,7 @@ struct HotkeySettings: Codable {
         HotkeySettings(keyCode: 0x08, modifiers: [.command, .shift])
     }
 
-    // Codable
+    // Codable key
     enum CodingKeys: String, CodingKey {
         case keyCode
         case modifiersRawValue
