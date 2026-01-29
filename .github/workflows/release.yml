@@ -167,22 +167,22 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BUILD="${{ steps.version.outputs.build }}"
 
-          cat > release-notes.md <<EOF
-## ClipClap v${VERSION}
+          cat > release-notes.md <<'NOTES'
+          ## ClipClap v${VERSION}
 
-**Installation:**
-1. Download the DMG file below
-2. Open the DMG
-3. Drag ClipClap to your Applications folder
-4. Launch ClipClap from Applications
-5. Grant accessibility permissions when prompted
+          **Installation:**
+          1. Download the DMG file below
+          2. Open the DMG
+          3. Drag ClipClap to your Applications folder
+          4. Launch ClipClap from Applications
+          5. Grant accessibility permissions when prompted
 
-**What's New:**
-- Automated release build ${BUILD}
+          **What's New:**
+          - Automated release build ${BUILD}
 
-**System Requirements:**
-- macOS 12.0 (Monterey) or later
-EOF
+          **System Requirements:**
+          - macOS 12.0 (Monterey) or later
+          NOTES
 
           gh release create "v${VERSION}" \
             "ClipClap-${VERSION}.dmg" \
