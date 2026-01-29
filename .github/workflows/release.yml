@@ -33,12 +33,6 @@ jobs:
             echo "This is a regular commit, proceeding with release"
           fi
 
-      - name: Set up Xcode
-        if: steps.check_commit.outputs.skip == 'false'
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
       - name: Get current version and increment
         if: steps.check_commit.outputs.skip == 'false'
         id: version
@@ -168,27 +162,29 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.check_commit.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: ClipClap v${{ steps.version.outputs.version }}
-          body: |
-            ## ClipClap v${{ steps.version.outputs.version }}
-
-            **Installation:**
-            1. Download the DMG file below
-            2. Open the DMG
-            3. Drag ClipClap to your Applications folder
-            4. Launch ClipClap from Applications
-            5. Grant accessibility permissions when prompted
-
-            **What's New:**
-            - Automated release build ${{ steps.version.outputs.build }}
-
-            **System Requirements:**
-            - macOS 12.0 (Monterey) or later
-          files: ClipClap-${{ steps.version.outputs.version }}.dmg
-          draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD="${{ steps.version.outputs.build }}"
+
+          gh release create "v${VERSION}" \
+            "ClipClap-${VERSION}.dmg" \
+            --title "ClipClap v${VERSION}" \
+            --notes "$(cat <<EOF
+          ## ClipClap v${VERSION}
+
+          **Installation:**
+          1. Download the DMG file below
+          2. Open the DMG
+          3. Drag ClipClap to your Applications folder
+          4. Launch ClipClap from Applications
+          5. Grant accessibility permissions when prompted
+
+          **What's New:**
+          - Automated release build ${BUILD}
+
+          **System Requirements:**
+          - macOS 12.0 (Monterey) or later
+          EOF
+          )"
