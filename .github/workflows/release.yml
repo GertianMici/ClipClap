@@ -11,8 +11,12 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: macos-latest
+    outputs:
+      skip: ${{ steps.check_commit.outputs.skip }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
 
     steps:
       - name: Checkout code
@@ -58,11 +62,38 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "build=$NEW_BUILD" >> $GITHUB_OUTPUT
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" ClipClap/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" ClipClap/Info.plist
+      - name: Build app (unsigned validation)
+        if: steps.check_commit.outputs.skip == 'false'
+        run: |
+          xcodebuild -project ClipClap.xcodeproj \
+            -scheme ClipClap \
+            -configuration Release \
+            -derivedDataPath build \
+            clean build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+  sign-and-release:
+    needs: build
+    if: needs.build.outputs.skip == 'false'
+    runs-on: macos-latest
+    environment: release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update version in plist
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          BUILD="${{ needs.build.outputs.build }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" ClipClap/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" ClipClap/Info.plist
 
       - name: Import signing certificate
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -97,7 +128,6 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
 
       - name: Build and archive app
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -112,7 +142,6 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--options=runtime"
 
       - name: Export archive
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -141,7 +170,6 @@ jobs:
             -exportOptionsPlist /tmp/ExportOptions.plist
 
       - name: Notarize app
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -161,11 +189,10 @@ jobs:
           xcrun stapler staple "build/Export/ClipClap.app"
 
       - name: Create DMG
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           brew install create-dmg
 
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           APP_PATH="build/Export/ClipClap.app"
           DMG_NAME="ClipClap-${VERSION}.dmg"
 
@@ -194,13 +221,12 @@ jobs:
           ls -lh "${DMG_NAME}"
 
       - name: Notarize DMG
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           DMG_NAME="ClipClap-${VERSION}.dmg"
 
           # Submit DMG for notarization and wait
@@ -214,29 +240,26 @@ jobs:
           xcrun stapler staple "${DMG_NAME}"
 
       - name: Commit version bump
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ClipClap/Info.plist
-          git commit -m "Bump version to ${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})"
-          git tag "v${{ steps.version.outputs.version }}"
+          git commit -m "Bump version to ${{ needs.build.outputs.version }} (build ${{ needs.build.outputs.build }})"
+          git tag "v${{ needs.build.outputs.version }}"
 
       - name: Push changes and tags
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ needs.build.outputs.version }}"
 
       - name: Create GitHub Release
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BUILD="${{ steps.version.outputs.build }}"
+          VERSION="${{ needs.build.outputs.version }}"
+          BUILD="${{ needs.build.outputs.build }}"
 
-          cat > release-notes.md <<'NOTES'
+          cat > release-notes.md <<NOTES
           ## ClipClap v${VERSION}
 
           **Installation:**
