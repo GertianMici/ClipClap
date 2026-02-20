@@ -31,16 +31,16 @@ jobs:
 
           echo "Current version: $CURRENT_VERSION (build $CURRENT_BUILD)"
 
-          if git tag | grep -q "^v${CURRENT_VERSION}$"; then
-            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-            MAJOR="${VERSION_PARTS[0]}"
-            MINOR="${VERSION_PARTS[1]:-0}"
-            PATCH="${VERSION_PARTS[2]:-0}"
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]:-0}"
+          PATCH="${VERSION_PARTS[2]:-0}"
+
+          NEW_VERSION="$CURRENT_VERSION"
+          while git tag | grep -q "^v${NEW_VERSION}$"; do
             PATCH=$((PATCH + 1))
             NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          else
-            NEW_VERSION="$CURRENT_VERSION"
-          fi
+          done
 
           NEW_BUILD=$((CURRENT_BUILD + 1))
 
