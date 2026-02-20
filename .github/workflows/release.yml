@@ -11,8 +11,12 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: macos-latest
+    outputs:
+      skip: ${{ steps.check_commit.outputs.skip }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
 
     steps:
       - name: Checkout code
@@ -58,43 +62,74 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "build=$NEW_BUILD" >> $GITHUB_OUTPUT
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" ClipClap/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" ClipClap/Info.plist
-
-      - name: Setup export options
+      - name: Build app (unsigned validation)
         if: steps.check_commit.outputs.skip == 'false'
         run: |
-          cat > /tmp/ExportOptions.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>mac-application</string>
-              <key>compileBitcode</key>
-              <false/>
-              <key>stripSwiftSymbols</key>
-              <true/>
-          EOF
+          xcodebuild -project ClipClap.xcodeproj \
+            -scheme ClipClap \
+            -configuration Release \
+            -derivedDataPath build \
+            clean build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
 
-          if [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
-            cat >> /tmp/ExportOptions.plist << 'EOF'
-              <key>signingStyle</key>
-              <string>automatic</string>
-              <key>teamID</key>
-              <string>${{ secrets.APPLE_TEAM_ID }}</string>
-          EOF
-          fi
+  sign-and-release:
+    needs: build
+    if: needs.build.outputs.skip == 'false'
+    runs-on: macos-latest
+    environment: release
 
-          cat >> /tmp/ExportOptions.plist << 'EOF'
-          </dict>
-          </plist>
-          EOF
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-          cat /tmp/ExportOptions.plist
+      - name: Update version in plist
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          BUILD="${{ needs.build.outputs.build }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" ClipClap/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" ClipClap/Info.plist
 
-      - name: Build app
-        if: steps.check_commit.outputs.skip == 'false'
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Set keychain as default and add to search list
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Clean up certificate file
+          rm -f "$CERT_PATH"
+
+          # Save keychain path for cleanup step
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      - name: Build and archive app
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           xcodebuild -project ClipClap.xcodeproj \
             -scheme ClipClap \
@@ -102,21 +137,62 @@ jobs:
             -derivedDataPath build \
             -archivePath build/ClipClap.xcarchive \
             archive \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            OTHER_CODE_SIGN_FLAGS="--options=runtime"
+
+      - name: Export archive
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > /tmp/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>developer-id</string>
+              <key>teamID</key>
+              <string>${APPLE_TEAM_ID}</string>
+              <key>signingStyle</key>
+              <string>automatic</string>
+              <key>signingCertificate</key>
+              <string>Developer ID Application</string>
+          </dict>
+          </plist>
+          EOF
+
+          cat /tmp/ExportOptions.plist
 
           xcodebuild -exportArchive \
             -archivePath build/ClipClap.xcarchive \
             -exportPath build/Export \
             -exportOptionsPlist /tmp/ExportOptions.plist
 
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Create a zip for notarization submission
+          ditto -c -k --keepParent "build/Export/ClipClap.app" build/ClipClap.zip
+
+          # Submit for notarization and wait for result
+          xcrun notarytool submit build/ClipClap.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the app
+          xcrun stapler staple "build/Export/ClipClap.app"
+
       - name: Create DMG
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           brew install create-dmg
 
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           APP_PATH="build/Export/ClipClap.app"
           DMG_NAME="ClipClap-${VERSION}.dmg"
 
@@ -144,30 +220,46 @@ jobs:
           echo "DMG created: ${DMG_NAME}"
           ls -lh "${DMG_NAME}"
 
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          DMG_NAME="ClipClap-${VERSION}.dmg"
+
+          # Submit DMG for notarization and wait
+          xcrun notarytool submit "${DMG_NAME}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the DMG
+          xcrun stapler staple "${DMG_NAME}"
+
       - name: Commit version bump
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ClipClap/Info.plist
-          git commit -m "Bump version to ${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})"
-          git tag "v${{ steps.version.outputs.version }}"
+          git commit -m "Bump version to ${{ needs.build.outputs.version }} (build ${{ needs.build.outputs.build }})"
+          git tag "v${{ needs.build.outputs.version }}"
 
       - name: Push changes and tags
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ needs.build.outputs.version }}"
 
       - name: Create GitHub Release
-        if: steps.check_commit.outputs.skip == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BUILD="${{ steps.version.outputs.build }}"
+          VERSION="${{ needs.build.outputs.version }}"
+          BUILD="${{ needs.build.outputs.build }}"
 
-          cat > release-notes.md <<'NOTES'
+          cat > release-notes.md <<NOTES
           ## ClipClap v${VERSION}
 
           **Installation:**
@@ -188,3 +280,10 @@ jobs:
             "ClipClap-${VERSION}.dmg" \
             --title "ClipClap v${VERSION}" \
             --notes-file release-notes.md
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
