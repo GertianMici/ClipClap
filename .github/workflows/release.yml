@@ -14,7 +14,6 @@ jobs:
   build:
     runs-on: macos-latest
     outputs:
-      skip: ${{ steps.check_commit.outputs.skip }}
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
 
@@ -24,20 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check if commit is version bump
-        id: check_commit
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          if [[ "$COMMIT_MSG" == "Bump version to"* ]]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "This is a version bump commit, skipping workflow"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "This is a regular commit, proceeding with release"
-          fi
-
       - name: Get current version and increment
-        if: steps.check_commit.outputs.skip == 'false'
         id: version
         run: |
           CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" ClipClap/Info.plist)
@@ -45,16 +31,16 @@ jobs:
 
           echo "Current version: $CURRENT_VERSION (build $CURRENT_BUILD)"
 
-          if git tag | grep -q "^v${CURRENT_VERSION}$"; then
-            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-            MAJOR="${VERSION_PARTS[0]}"
-            MINOR="${VERSION_PARTS[1]:-0}"
-            PATCH="${VERSION_PARTS[2]:-0}"
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]:-0}"
+          PATCH="${VERSION_PARTS[2]:-0}"
+
+          NEW_VERSION="$CURRENT_VERSION"
+          while git tag | grep -q "^v${NEW_VERSION}$"; do
             PATCH=$((PATCH + 1))
             NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          else
-            NEW_VERSION="$CURRENT_VERSION"
-          fi
+          done
 
           NEW_BUILD=$((CURRENT_BUILD + 1))
 
@@ -63,7 +49,6 @@ jobs:
           echo "build=$NEW_BUILD" >> $GITHUB_OUTPUT
 
       - name: Build app (unsigned validation)
-        if: steps.check_commit.outputs.skip == 'false'
         run: |
           xcodebuild -project ClipClap.xcodeproj \
             -scheme ClipClap \
@@ -76,7 +61,6 @@ jobs:
 
   sign-and-release:
     needs: build
-    if: needs.build.outputs.skip == 'false'
     runs-on: macos-latest
     environment: release
 
@@ -240,17 +224,9 @@ jobs:
           # Staple the notarization ticket to the DMG
           xcrun stapler staple "${DMG_NAME}"
 
-      - name: Commit version bump
+      - name: Tag release
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ClipClap/Info.plist
-          git commit -m "Bump version to ${{ needs.build.outputs.version }} (build ${{ needs.build.outputs.build }})"
           git tag "v${{ needs.build.outputs.version }}"
-
-      - name: Push changes and tags
-        run: |
-          git push origin HEAD:main
           git push origin "v${{ needs.build.outputs.version }}"
 
       - name: Create GitHub Release
