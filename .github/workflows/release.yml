@@ -244,14 +244,26 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BUMP_BRANCH="chore/version-bump-${{ needs.build.outputs.version }}"
+          git checkout -b "$BUMP_BRANCH"
           git add ClipClap/Info.plist
           git commit -m "Bump version to ${{ needs.build.outputs.version }} (build ${{ needs.build.outputs.build }})"
           git tag "v${{ needs.build.outputs.version }}"
-
-      - name: Push changes and tags
-        run: |
-          git push origin HEAD:main
+          git push origin "$BUMP_BRANCH"
           git push origin "v${{ needs.build.outputs.version }}"
+
+      - name: Open version bump PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          BUILD="${{ needs.build.outputs.build }}"
+          BUMP_BRANCH="chore/version-bump-${VERSION}"
+          gh pr create \
+            --title "Bump version to ${VERSION} (build ${BUILD})" \
+            --body "Automated version bump after release [v${VERSION}](../../releases/tag/v${VERSION})." \
+            --base main \
+            --head "$BUMP_BRANCH"
 
       - name: Create GitHub Release
         env:
