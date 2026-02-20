@@ -69,3 +69,12 @@ fastlane/test_output
 # Build artifacts
 build/
 *.dmg
+
+# Secrets and environment files
+.env
+.env.*
+*.xcconfig
+ExportOptions.plist
+
+# Xcode user data (belt-and-suspenders)
+**/xcuserdata/
